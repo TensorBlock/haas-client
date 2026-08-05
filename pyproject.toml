@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tensorblock-haas-client"
+version = "0.8.0"
+description = "Python client for TensorBlock HAAS."
+requires-python = ">=3.10"
+dependencies = [
+  "httpx>=0.27,<1.0"
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.2,<9.0"
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
