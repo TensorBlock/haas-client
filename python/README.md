@@ -85,6 +85,16 @@ override shared fields such as `prompt`, `metadata`, `timeout_seconds`,
 `tools`, `context`, `extensions`, `files`, and `agent_options`; HAAS itself
 still only sees ordinary single-run API calls.
 
+The client automatically sends an idempotency key for `create_run()` and
+`run_many()` calls when one is not provided, so retryable HTTP failures can be
+retried without duplicating runs. For pipeline replay across process restarts,
+pass a stable `idempotency_key` or `idempotency_key_prefix`.
+
+If fanout submission fails after some runs were already created, the client
+raises `HAASPartialBatchError` with the created run ids. Set
+`cancel_on_submit_failure=True` when a partial fanout should be cancelled rather
+than allowed to continue.
+
 Pass local files as run input:
 
 ```python

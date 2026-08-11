@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import mimetypes
+import random
 import time
+import uuid
 from pathlib import Path
+from email.utils import parsedate_to_datetime
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import quote
 
@@ -43,6 +46,18 @@ class HAASManyRunsFailedError(RuntimeError):
         super().__init__(f"HAAS fanout runs failed: {summary}")
 
 
+class HAASPartialBatchError(RuntimeError):
+    def __init__(self, *, created_runs: Sequence[Mapping[str, Any]], failed_index: int, cause: BaseException) -> None:
+        self.created_runs = [dict(item) for item in created_runs]
+        self.failed_index = failed_index
+        self.cause = cause
+        run_ids = ", ".join(str(item.get("run_id")) for item in self.created_runs) or "none"
+        super().__init__(
+            f"HAAS fanout submit failed at index {failed_index}; "
+            f"created run ids before failure: {run_ids}; cause: {cause}"
+        )
+
+
 class HAASClient:
     def __init__(
         self,
@@ -50,10 +65,16 @@ class HAASClient:
         token: str | None = None,
         *,
         request_timeout_seconds: float = 30.0,
+        max_retries: int = 3,
+        retry_base_seconds: float = 0.5,
+        retry_max_seconds: float = 5.0,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.token = token
+        self.max_retries = max(0, max_retries)
+        self.retry_base_seconds = max(0.0, retry_base_seconds)
+        self.retry_max_seconds = max(0.0, retry_max_seconds)
         self._client = httpx.Client(timeout=request_timeout_seconds, transport=transport)
 
     def close(self) -> None:
@@ -144,6 +165,7 @@ class HAASClient:
         metadata: Mapping[str, Any] | None = None,
         idempotency_key: str | None = None,
         files: list[str | Path] | None = None,
+        auto_idempotency_key: bool = True,
     ) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "tenant_id": tenant_id,
@@ -175,7 +197,10 @@ class HAASClient:
         if agent_options is not None:
             payload["agent"].setdefault("options", {}).update(dict(agent_options))
 
-        extra_headers = {"Idempotency-Key": idempotency_key} if idempotency_key else None
+        resolved_idempotency_key = idempotency_key
+        if resolved_idempotency_key is None and auto_idempotency_key:
+            resolved_idempotency_key = f"haas-client:{uuid.uuid4().hex}"
+        extra_headers = {"Idempotency-Key": resolved_idempotency_key} if resolved_idempotency_key else None
         if files:
             return self._create_run_with_files(payload, files, extra_headers=extra_headers)
         return self._request("POST", "/v1/runs", json=payload, extra_headers=extra_headers)
@@ -283,6 +308,8 @@ class HAASClient:
         metadata: Mapping[str, Any] | None = None,
         idempotency_key_prefix: str | None = None,
         files: list[str | Path] | None = None,
+        auto_idempotency_key: bool = True,
+        cancel_on_submit_failure: bool = False,
     ) -> dict[str, Any]:
         """Submit a dynamic fanout batch.
 
@@ -292,6 +319,9 @@ class HAASClient:
         - a run spec with an ``agent`` key plus optional per-run overrides.
         """
         created_runs: list[dict[str, Any]] = []
+        generated_idempotency_key_prefix = None
+        if idempotency_key_prefix is None and auto_idempotency_key:
+            generated_idempotency_key_prefix = f"haas-client:fanout:{uuid.uuid4().hex}"
         for index, entry in enumerate(agents):
             spec = self._normalize_run_many_entry(entry, index)
             run_prompt = spec.get("prompt", prompt)
@@ -307,27 +337,38 @@ class HAASClient:
             run_extensions = self._merge_sequence(extensions, spec.get("extensions"))
             run_files = self._merge_sequence(files, spec.get("files"))
             idempotency_key = spec.get("idempotency_key")
-            if idempotency_key is None and idempotency_key_prefix:
-                idempotency_key = f"{idempotency_key_prefix}:{index}:{name or 'run'}"
+            key_prefix = idempotency_key_prefix or generated_idempotency_key_prefix
+            if idempotency_key is None and key_prefix:
+                idempotency_key = f"{key_prefix}:{index}:{name or 'run'}"
 
-            created = self.create_run(
-                agent=spec["agent"],
-                prompt=run_prompt,
-                tenant_id=spec.get("tenant_id", tenant_id),
-                project_id=spec.get("project_id", project_id),
-                user_id=spec.get("user_id", user_id),
-                credential_profile=spec.get("credential_profile", credential_profile),
-                agent_options=run_agent_options or None,
-                context=run_context or None,
-                extensions=run_extensions or None,
-                tools=self._merge_mapping(tools, spec.get("tools")) or None,
-                memory=self._merge_mapping(memory, spec.get("memory")) or None,
-                delivery=self._merge_mapping(delivery, spec.get("delivery")) or None,
-                timeout_seconds=spec.get("timeout_seconds", timeout_seconds),
-                metadata=run_metadata,
-                idempotency_key=idempotency_key,
-                files=run_files or None,
-            )
+            try:
+                created = self.create_run(
+                    agent=spec["agent"],
+                    prompt=run_prompt,
+                    tenant_id=spec.get("tenant_id", tenant_id),
+                    project_id=spec.get("project_id", project_id),
+                    user_id=spec.get("user_id", user_id),
+                    credential_profile=spec.get("credential_profile", credential_profile),
+                    agent_options=run_agent_options or None,
+                    context=run_context or None,
+                    extensions=run_extensions or None,
+                    tools=self._merge_mapping(tools, spec.get("tools")) or None,
+                    memory=self._merge_mapping(memory, spec.get("memory")) or None,
+                    delivery=self._merge_mapping(delivery, spec.get("delivery")) or None,
+                    timeout_seconds=spec.get("timeout_seconds", timeout_seconds),
+                    metadata=run_metadata,
+                    idempotency_key=idempotency_key,
+                    files=run_files or None,
+                    auto_idempotency_key=auto_idempotency_key,
+                )
+            except Exception as exc:
+                if cancel_on_submit_failure:
+                    self._cancel_created_runs_best_effort(created_runs)
+                raise HAASPartialBatchError(
+                    created_runs=created_runs,
+                    failed_index=index,
+                    cause=exc,
+                ) from exc
             created_runs.append(
                 {
                     "name": name,
@@ -416,19 +457,52 @@ class HAASClient:
         return headers
 
     def _request(self, method: str, path: str, *, extra_headers: Mapping[str, str] | None = None, **kwargs: Any) -> Any:
-        response = self._client.request(method, self._url(path), headers=self._headers(extra_headers), **kwargs)
+        response = self._request_with_retries(method, path, extra_headers=extra_headers, **kwargs)
         self._raise_for_error(response)
         return response.json()
 
     def _request_text(self, method: str, path: str, *, extra_headers: Mapping[str, str] | None = None, **kwargs: Any) -> str:
-        response = self._client.request(method, self._url(path), headers=self._headers(extra_headers), **kwargs)
+        response = self._request_with_retries(method, path, extra_headers=extra_headers, **kwargs)
         self._raise_for_error(response)
         return response.text
 
     def _request_bytes(self, method: str, path: str, *, extra_headers: Mapping[str, str] | None = None, **kwargs: Any) -> bytes:
-        response = self._client.request(method, self._url(path), headers=self._headers(extra_headers), **kwargs)
+        response = self._request_with_retries(method, path, extra_headers=extra_headers, **kwargs)
         self._raise_for_error(response)
         return response.content
+
+    def _request_with_retries(
+        self,
+        method: str,
+        path: str,
+        *,
+        extra_headers: Mapping[str, str] | None = None,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        headers = self._headers(extra_headers)
+        retryable = self._request_is_retryable(method, path, headers)
+        last_error: httpx.TransportError | None = None
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self._client.request(method, self._url(path), headers=headers, **kwargs)
+            except httpx.TransportError as exc:
+                last_error = exc
+                if not retryable or attempt >= self.max_retries:
+                    raise
+                self._sleep_before_retry(attempt)
+                continue
+
+            if (
+                retryable
+                and response.status_code in {408, 425, 429, 500, 502, 503, 504}
+                and attempt < self.max_retries
+            ):
+                self._sleep_before_retry(attempt, response=response)
+                continue
+            return response
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("HAAS request retry loop exhausted without a response")
 
     def _create_run_with_files(
         self,
@@ -437,28 +511,58 @@ class HAASClient:
         *,
         extra_headers: Mapping[str, str] | None,
     ) -> dict[str, Any]:
-        handles = []
-        try:
-            multipart_files = []
-            for path in files:
-                file_path = Path(path)
-                content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
-                handle = file_path.open("rb")
-                handles.append(handle)
-                multipart_files.append(("files", (file_path.name, handle, content_type)))
-            return self._request(
-                "POST",
-                "/v1/runs",
-                data={"payload": json.dumps(payload, separators=(",", ":"))},
-                files=multipart_files,
-                extra_headers=extra_headers,
-            )
-        finally:
-            for handle in handles:
-                handle.close()
+        multipart_files = []
+        for path in files:
+            file_path = Path(path)
+            content_type = mimetypes.guess_type(file_path.name)[0] or "application/octet-stream"
+            multipart_files.append(("files", (file_path.name, file_path.read_bytes(), content_type)))
+        return self._request(
+            "POST",
+            "/v1/runs",
+            data={"payload": json.dumps(payload, separators=(",", ":"))},
+            files=multipart_files,
+            extra_headers=extra_headers,
+        )
 
     def _url(self, path: str) -> str:
         return f"{self.base_url}{path}"
+
+    def _request_is_retryable(self, method: str, path: str, headers: Mapping[str, str]) -> bool:
+        method = method.upper()
+        if method in {"GET", "HEAD", "OPTIONS"}:
+            return True
+        if "Idempotency-Key" in headers:
+            return True
+        if method == "POST" and path.endswith("/cancel"):
+            return True
+        if method == "POST" and "/v1/deliveries/" in path and path.endswith("/retry"):
+            return True
+        return False
+
+    def _sleep_before_retry(self, attempt: int, *, response: httpx.Response | None = None) -> None:
+        retry_after = self._retry_after_seconds(response) if response is not None else None
+        if retry_after is None:
+            cap = self.retry_max_seconds or self.retry_base_seconds
+            retry_after = min(cap, self.retry_base_seconds * (2**attempt))
+            retry_after = retry_after + random.uniform(0, min(0.25, retry_after))
+        if retry_after > 0:
+            time.sleep(retry_after)
+
+    def _retry_after_seconds(self, response: httpx.Response | None) -> float | None:
+        if response is None:
+            return None
+        raw = response.headers.get("Retry-After")
+        if not raw:
+            return None
+        try:
+            return max(0.0, float(raw))
+        except ValueError:
+            pass
+        try:
+            retry_at = parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        return max(0.0, retry_at.timestamp() - time.time())
 
     def _normalize_run_many_entry(self, entry: str | Mapping[str, Any], index: int) -> dict[str, Any]:
         if isinstance(entry, str):
@@ -501,6 +605,16 @@ class HAASClient:
             "run_ids": [item["run_id"] for item in runs],
             "runs": runs,
         }
+
+    def _cancel_created_runs_best_effort(self, runs: Sequence[Mapping[str, Any]]) -> None:
+        for item in runs:
+            run_id = item.get("run_id")
+            if not isinstance(run_id, str) or not run_id:
+                continue
+            try:
+                self.cancel_run(run_id)
+            except Exception:
+                continue
 
     def _completed_many_result(
         self,

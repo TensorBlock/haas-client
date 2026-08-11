@@ -4,7 +4,13 @@ from pathlib import Path
 import httpx
 import pytest
 
-from haas_client import HAASAPIError, HAASClient, HAASManyRunsFailedError, HAASRunFailedError
+from haas_client import (
+    HAASAPIError,
+    HAASClient,
+    HAASManyRunsFailedError,
+    HAASPartialBatchError,
+    HAASRunFailedError,
+)
 
 
 def test_create_run_sends_auth_and_payload() -> None:
@@ -301,6 +307,108 @@ def test_error_includes_detail() -> None:
 
     assert exc.value.status_code == 401
     assert "Unauthorized" in str(exc.value)
+
+
+def test_create_run_retries_retryable_error_with_same_idempotency_key() -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.headers.get("idempotency-key"))
+        if len(calls) == 1:
+            return httpx.Response(429, headers={"Retry-After": "0"}, json={"detail": "queue full"})
+        return httpx.Response(200, json={"run_id": "run_1", "status": "queued"})
+
+    client = HAASClient(
+        "https://haas.example",
+        transport=httpx.MockTransport(handler),
+        max_retries=1,
+        retry_base_seconds=0,
+    )
+    created = client.create_run(agent="codex", prompt="hello")
+
+    assert created["run_id"] == "run_1"
+    assert len(calls) == 2
+    assert calls[0] is not None
+    assert calls[0] == calls[1]
+
+
+def test_create_run_with_files_retries_with_full_file_content(tmp_path: Path) -> None:
+    input_path = tmp_path / "input.txt"
+    input_path.write_text("retryable file body", encoding="utf-8")
+    bodies = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(request.read())
+        if len(bodies) == 1:
+            return httpx.Response(503, json={"detail": "temporary outage"})
+        return httpx.Response(200, json={"run_id": "run_1", "status": "queued"})
+
+    client = HAASClient(
+        "https://haas.example",
+        transport=httpx.MockTransport(handler),
+        max_retries=1,
+        retry_base_seconds=0,
+    )
+    created = client.create_run(agent="codex", prompt="use file", files=[input_path])
+
+    assert created["run_id"] == "run_1"
+    assert len(bodies) == 2
+    assert b"retryable file body" in bodies[0]
+    assert b"retryable file body" in bodies[1]
+
+
+def test_wait_run_retries_transient_get_error() -> None:
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, json={"detail": "temporary outage"})
+        return httpx.Response(200, json={"run_id": "run_1", "status": "succeeded"})
+
+    client = HAASClient(
+        "https://haas.example",
+        transport=httpx.MockTransport(handler),
+        max_retries=1,
+        retry_base_seconds=0,
+    )
+    record = client.wait_run("run_1", poll_interval_seconds=0)
+
+    assert record["status"] == "succeeded"
+    assert calls == 2
+
+
+def test_run_many_partial_failure_reports_created_runs_and_can_cancel() -> None:
+    cancelled = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/runs/run_1/cancel":
+            cancelled.append("run_1")
+            return httpx.Response(200, json={"run_id": "run_1", "status": "cancelled"})
+        if request.url.path == "/v1/runs":
+            payload = json.loads(request.content)
+            if payload["agent"]["type"] == "codex":
+                return httpx.Response(200, json={"run_id": "run_1", "status": "queued"})
+            return httpx.Response(500, json={"detail": "submit failed"})
+        return httpx.Response(404)
+
+    client = HAASClient(
+        "https://haas.example",
+        transport=httpx.MockTransport(handler),
+        max_retries=0,
+    )
+
+    with pytest.raises(HAASPartialBatchError) as exc:
+        client.run_many(
+            agents=["codex", "grok"],
+            prompt="hello",
+            cancel_on_submit_failure=True,
+        )
+
+    assert [item["run_id"] for item in exc.value.created_runs] == ["run_1"]
+    assert exc.value.failed_index == 1
+    assert cancelled == ["run_1"]
 
 
 def test_list_events() -> None:
