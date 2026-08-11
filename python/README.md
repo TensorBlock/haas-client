@@ -19,12 +19,14 @@ client = HAASClient(
 run = client.run_and_wait(
     agent="codex",
     prompt="Hello world. Reply with a short greeting.",
+    worklog=True,
     timeout_seconds=120,
     idempotency_key="pipeline-run-123:step-1",
     raise_on_failure=True,
 )
 
 print(run["result"]["final_message"])
+print([artifact for artifact in run["result"]["artifacts"] if artifact["type"] == "worklog"])
 ```
 
 For polling systems that only need the final message and artifact list, use the
@@ -70,6 +72,7 @@ batch = client.run_many_and_wait(
     prompt="Run this pipeline task and return the final deliverables.",
     extensions=[{"type": "skill", "ref": "common-pipeline", "version": "1.0.0"}],
     project_id="pipeline",
+    worklog=True,
     idempotency_key_prefix="pipeline-run-123:fanout",
     timeout_seconds=1800,
 )
@@ -82,8 +85,16 @@ for item in batch["runs"]:
 `run_many()` submits the runs and returns run ids immediately. `wait_many()`
 accepts either that return value or a list of run ids. Each agent entry can
 override shared fields such as `prompt`, `metadata`, `timeout_seconds`,
-`tools`, `context`, `extensions`, `files`, and `agent_options`; HAAS itself
-still only sees ordinary single-run API calls.
+`tools`, `context`, `extensions`, `files`, `options`, `worklog`, and
+`agent_options`; HAAS itself still only sees ordinary single-run API calls.
+
+Set `worklog=True` when a run should return a generated `worklog.md` artifact.
+The worklog records the run metadata, lifecycle timeline, final message, error,
+and artifact list. You can also read the dynamic worklog view directly:
+
+```python
+worklog = client.get_worklog(run["run_id"])
+```
 
 The client automatically sends an idempotency key for `create_run()` and
 `run_many()` calls when one is not provided, so retryable HTTP failures can be
@@ -111,7 +122,8 @@ export HAAS_API_TOKEN="..."
 haas-fanout-acceptance \
   --base-url https://haas-api-production.up.railway.app \
   --agents codex,claude-code,grok \
-  --groups 1
+  --groups 1 \
+  --worklog
 ```
 
 Increase `--groups` to submit multiple fanout groups in one acceptance run.

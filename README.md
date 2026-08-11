@@ -38,10 +38,12 @@ client = HAASClient(
 run = client.run_and_wait(
     agent="codex",
     prompt="Hello world. Reply with a short greeting.",
+    worklog=True,
     raise_on_failure=True,
 )
 
 print(run["result"]["final_message"])
+print([artifact for artifact in run["result"]["artifacts"] if artifact["type"] == "worklog"])
 ```
 
 ## Production Acceptance
@@ -53,5 +55,6 @@ export HAAS_API_TOKEN="..."
 haas-fanout-acceptance \
   --base-url https://haas-api-production.up.railway.app \
   --agents codex,claude-code,grok \
-  --groups 1
+  --groups 1 \
+  --worklog
 ```

@@ -34,6 +34,32 @@ def test_create_run_sends_auth_and_payload() -> None:
     assert seen["payload"]["timeout_seconds"] == 120
 
 
+def test_create_run_can_request_worklog_artifact() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"run_id": "run_1", "status": "queued"})
+
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
+    client.create_run(agent="codex", prompt="hello", worklog=True)
+
+    assert seen["payload"]["options"] == {"worklog": True}
+
+
+def test_create_run_merges_options_and_worklog_flag() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"run_id": "run_1", "status": "queued"})
+
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
+    client.create_run(agent="codex", prompt="hello", options={"trace": "compact"}, worklog=False)
+
+    assert seen["payload"]["options"] == {"trace": "compact", "worklog": False}
+
+
 def test_upload_file_sends_multipart_request(tmp_path: Path) -> None:
     upload_path = tmp_path / "input.txt"
     upload_path.write_text("hello upload", encoding="utf-8")
@@ -203,6 +229,7 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
                 "agent": {"type": "grok", "options": {"model": "grok-4.5"}},
                 "prompt": "custom grok prompt",
                 "metadata": {"lane": "deep"},
+                "worklog": False,
                 "extensions": [{"type": "skill", "ref": "grok-extra", "version": "0.2.0"}],
             },
             {"name": "claude", "type": "claude-code", "options": {"max_turns": 3}},
@@ -211,6 +238,8 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
         project_id="pipeline",
         metadata={"pipeline_id": "pipe_1"},
         extensions=[{"type": "skill", "ref": "common", "version": "1.0.0"}],
+        options={"trace": "compact"},
+        worklog=True,
         idempotency_key_prefix="pipe_1:fanout",
     )
 
@@ -220,6 +249,7 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
     assert calls[0]["payload"]["input"]["prompt"] == "shared prompt"
     assert calls[0]["payload"]["metadata"] == {"pipeline_id": "pipe_1", "fanout_name": "codex"}
     assert calls[0]["payload"]["extensions"] == [{"type": "skill", "ref": "common", "version": "1.0.0"}]
+    assert calls[0]["payload"]["options"] == {"trace": "compact", "worklog": True}
 
     assert calls[1]["idempotency_key"] == "pipe_1:fanout:1:grok-deep"
     assert calls[1]["payload"]["agent"]["type"] == "grok"
@@ -230,6 +260,7 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
         "lane": "deep",
         "fanout_name": "grok-deep",
     }
+    assert calls[1]["payload"]["options"] == {"trace": "compact", "worklog": False}
     assert calls[1]["payload"]["extensions"] == [
         {"type": "skill", "ref": "common", "version": "1.0.0"},
         {"type": "skill", "ref": "grok-extra", "version": "0.2.0"},
@@ -459,6 +490,17 @@ def test_get_run_summary() -> None:
     summary = client.get_run_summary("run_1")
 
     assert summary["final_message"] == "done"
+
+
+def test_get_worklog() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/v1/runs/run_1/worklog"
+        return httpx.Response(200, text="# HAAS Worklog\n")
+
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
+
+    assert client.get_worklog("run_1") == "# HAAS Worklog\n"
 
 
 def test_agent_health_system_status_and_cleanup() -> None:

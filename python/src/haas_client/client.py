@@ -163,10 +163,15 @@ class HAASClient:
         delivery: Mapping[str, Any] | None = None,
         timeout_seconds: int | None = None,
         metadata: Mapping[str, Any] | None = None,
+        options: Mapping[str, Any] | None = None,
+        worklog: bool | None = None,
         idempotency_key: str | None = None,
         files: list[str | Path] | None = None,
         auto_idempotency_key: bool = True,
     ) -> dict[str, Any]:
+        run_options = dict(options or {})
+        if worklog is not None:
+            run_options["worklog"] = worklog
         payload: dict[str, Any] = {
             "tenant_id": tenant_id,
             "project_id": project_id,
@@ -175,6 +180,8 @@ class HAASClient:
             "extensions": list(extensions or []),
             "metadata": dict(metadata or {}),
         }
+        if run_options:
+            payload["options"] = run_options
         if user_id is not None:
             payload["user_id"] = user_id
         if timeout_seconds is not None:
@@ -210,6 +217,9 @@ class HAASClient:
 
     def get_run_summary(self, run_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/runs/{quote(run_id, safe='')}/summary")
+
+    def get_worklog(self, run_id: str) -> str:
+        return self._request_text("GET", f"/v1/runs/{quote(run_id, safe='')}/worklog")
 
     def list_runs(
         self,
@@ -345,6 +355,8 @@ class HAASClient:
         delivery: Mapping[str, Any] | None = None,
         timeout_seconds: int | None = None,
         metadata: Mapping[str, Any] | None = None,
+        options: Mapping[str, Any] | None = None,
+        worklog: bool | None = None,
         idempotency_key_prefix: str | None = None,
         files: list[str | Path] | None = None,
         auto_idempotency_key: bool = True,
@@ -375,6 +387,8 @@ class HAASClient:
             run_context = self._merge_sequence(context, spec.get("context"))
             run_extensions = self._merge_sequence(extensions, spec.get("extensions"))
             run_files = self._merge_sequence(files, spec.get("files"))
+            run_options = self._merge_mapping(options, spec.get("options"))
+            run_worklog = spec.get("worklog", worklog)
             idempotency_key = spec.get("idempotency_key")
             key_prefix = idempotency_key_prefix or generated_idempotency_key_prefix
             if idempotency_key is None and key_prefix:
@@ -396,6 +410,8 @@ class HAASClient:
                     delivery=self._merge_mapping(delivery, spec.get("delivery")) or None,
                     timeout_seconds=spec.get("timeout_seconds", timeout_seconds),
                     metadata=run_metadata,
+                    options=run_options or None,
+                    worklog=run_worklog,
                     idempotency_key=idempotency_key,
                     files=run_files or None,
                     auto_idempotency_key=auto_idempotency_key,

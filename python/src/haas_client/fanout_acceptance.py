@@ -54,6 +54,7 @@ def main() -> None:
                     project_id=args.project_id,
                     metadata=metadata,
                     extensions=extensions,
+                    worklog=args.worklog,
                     timeout_seconds=args.timeout_seconds,
                     idempotency_key_prefix=f"{idempotency_prefix}:fanout",
                     cancel_on_submit_failure=True,
@@ -114,10 +115,16 @@ def main() -> None:
         run_id_to_group=run_id_to_group,
         elapsed_seconds=time.monotonic() - started_at,
         expected_substring=args.expected_substring,
+        expected_worklog=args.worklog,
     )
     print_json({"event": "summary", **summary})
 
-    if summary["failed_count"] or summary["missing_observed_run_ids"] or summary["unexpected_final_messages"]:
+    if (
+        summary["failed_count"]
+        or summary["missing_observed_run_ids"]
+        or summary["unexpected_final_messages"]
+        or summary["missing_worklog_run_ids"]
+    ):
         raise SystemExit(1)
 
 
@@ -140,6 +147,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--poll-interval-seconds", type=float, default=5)
     parser.add_argument("--request-timeout-seconds", type=float, default=30)
     parser.add_argument("--max-retries", type=int, default=3)
+    parser.add_argument("--worklog", action="store_true")
     parser.add_argument("--submit-only", action="store_true")
     return parser.parse_args()
 
@@ -177,12 +185,14 @@ def build_summary(
     run_id_to_group: Mapping[str, str],
     elapsed_seconds: float,
     expected_substring: str,
+    expected_worklog: bool,
 ) -> dict[str, Any]:
     runs = list(result["runs"])
     status_counts = Counter(str(item["status"]) for item in runs)
     failed = list(result["failed"])
     missing_observed_run_ids: list[str] = []
     unexpected_final_messages: list[dict[str, str | None]] = []
+    missing_worklog_run_ids: list[str] = []
 
     observed_by_group = {
         group_id: {str(record["run_id"]) for record in records}
@@ -192,9 +202,9 @@ def build_summary(
         if run_id not in observed_by_group.get(group_id, set()):
             missing_observed_run_ids.append(run_id)
 
-    if expected_substring:
-        for item in runs:
-            record = item["record"]
+    for item in runs:
+        record = item["record"]
+        if expected_substring:
             final_message = ((record.get("result") or {}).get("final_message") or "")
             if item["status"] == "succeeded" and expected_substring not in final_message:
                 unexpected_final_messages.append(
@@ -204,6 +214,10 @@ def build_summary(
                         "final_message": final_message,
                     }
                 )
+        if expected_worklog and item["status"] == "succeeded":
+            artifacts = (record.get("result") or {}).get("artifacts") or []
+            if not any(artifact.get("type") == "worklog" for artifact in artifacts):
+                missing_worklog_run_ids.append(str(item["run_id"]))
 
     return {
         "elapsed_seconds": round(elapsed_seconds, 3),
@@ -215,6 +229,7 @@ def build_summary(
         "observed_group_counts": {group_id: len(records) for group_id, records in observed_groups.items()},
         "missing_observed_run_ids": missing_observed_run_ids,
         "unexpected_final_messages": unexpected_final_messages,
+        "missing_worklog_run_ids": missing_worklog_run_ids,
     }
 
 
