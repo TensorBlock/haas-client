@@ -43,3 +43,15 @@ run = client.run_and_wait(
 
 print(run["result"]["final_message"])
 ```
+
+## Production Acceptance
+
+The Python SDK includes a fanout acceptance script for pipeline releases:
+
+```bash
+export HAAS_API_TOKEN="..."
+haas-fanout-acceptance \
+  --base-url https://haas-api-production.up.railway.app \
+  --agents codex,claude-code,grok \
+  --groups 1
+```

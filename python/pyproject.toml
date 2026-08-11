@@ -11,6 +11,9 @@ dependencies = [
   "httpx>=0.27,<1.0"
 ]
 
+[project.scripts]
+haas-fanout-acceptance = "haas_client.fanout_acceptance:main"
+
 [project.optional-dependencies]
 dev = [
   "pytest>=8.2,<9.0"

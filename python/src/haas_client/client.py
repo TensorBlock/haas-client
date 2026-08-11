@@ -211,8 +211,47 @@ class HAASClient:
     def get_run_summary(self, run_id: str) -> dict[str, Any]:
         return self._request("GET", f"/v1/runs/{quote(run_id, safe='')}/summary")
 
-    def list_runs(self, *, limit: int = 50) -> list[dict[str, Any]]:
-        return self._request("GET", "/v1/runs", params={"limit": limit})
+    def list_runs(
+        self,
+        *,
+        limit: int = 50,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        status: str | None = None,
+        metadata_key: str | None = None,
+        metadata_value: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, Any] = {"limit": limit}
+        if tenant_id is not None:
+            params["tenant_id"] = tenant_id
+        if project_id is not None:
+            params["project_id"] = project_id
+        if status is not None:
+            params["status"] = status
+        if metadata_key is not None:
+            params["metadata_key"] = metadata_key
+        if metadata_value is not None:
+            params["metadata_value"] = metadata_value
+        return self._request("GET", "/v1/runs", params=params)
+
+    def list_run_group(
+        self,
+        run_group_id: str,
+        *,
+        metadata_key: str = "run_group_id",
+        limit: int = 50,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+        status: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self.list_runs(
+            limit=limit,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            status=status,
+            metadata_key=metadata_key,
+            metadata_value=run_group_id,
+        )
 
     def list_events(self, run_id: str, *, after_id: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         return self._request(

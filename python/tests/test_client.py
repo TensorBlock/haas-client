@@ -489,6 +489,45 @@ def test_agent_health_system_status_and_cleanup() -> None:
     ]
 
 
+def test_list_runs_supports_observability_filters() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/v1/runs"
+        assert request.url.params["limit"] == "25"
+        assert request.url.params["tenant_id"] == "internal"
+        assert request.url.params["project_id"] == "pipeline"
+        assert request.url.params["status"] == "succeeded"
+        assert request.url.params["metadata_key"] == "run_group_id"
+        assert request.url.params["metadata_value"] == "group_1"
+        return httpx.Response(200, json=[{"run_id": "run_1", "status": "succeeded"}])
+
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
+
+    runs = client.list_runs(
+        limit=25,
+        tenant_id="internal",
+        project_id="pipeline",
+        status="succeeded",
+        metadata_key="run_group_id",
+        metadata_value="group_1",
+    )
+
+    assert runs == [{"run_id": "run_1", "status": "succeeded"}]
+
+
+def test_list_run_group_uses_metadata_contract() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/runs"
+        assert request.url.params["project_id"] == "pipeline"
+        assert request.url.params["metadata_key"] == "run_group_id"
+        assert request.url.params["metadata_value"] == "group_1"
+        return httpx.Response(200, json=[])
+
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
+
+    assert client.list_run_group("group_1", project_id="pipeline") == []
+
+
 def test_wait_run_can_raise_on_failed_terminal_record() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"run_id": "run_1", "status": "failed", "error": "agent failed"})

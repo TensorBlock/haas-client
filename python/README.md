@@ -95,6 +95,29 @@ raises `HAASPartialBatchError` with the created run ids. Set
 `cancel_on_submit_failure=True` when a partial fanout should be cancelled rather
 than allowed to continue.
 
+Use `metadata.run_group_id` as the pipeline observability contract when a group
+of single-run requests belong to one fanout. HAAS can list that group directly:
+
+```python
+runs = client.list_run_group("pipeline-run-123", project_id="pipeline")
+print([run["status"] for run in runs])
+```
+
+Run the production fanout acceptance script before wiring HAAS into a pipeline
+release:
+
+```bash
+export HAAS_API_TOKEN="..."
+haas-fanout-acceptance \
+  --base-url https://haas-api-production.up.railway.app \
+  --agents codex,claude-code,grok \
+  --groups 1
+```
+
+Increase `--groups` to submit multiple fanout groups in one acceptance run.
+When running from a source checkout instead of an installed package, use
+`python python/examples/fanout_acceptance.py` from the repository root.
+
 Pass local files as run input:
 
 ```python
