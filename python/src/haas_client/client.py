@@ -1,12 +1,12 @@
 from __future__ import annotations
 
+from email.utils import parsedate_to_datetime
 import json
 import mimetypes
 import random
 import time
 import uuid
 from pathlib import Path
-from email.utils import parsedate_to_datetime
 from typing import Any, Iterable, Mapping, Sequence
 from urllib.parse import quote
 
@@ -146,6 +146,26 @@ class HAASClient:
                 files={"file": (upload_name, handle, guessed_content_type)},
             )
 
+    def document_reference(
+        self,
+        *,
+        url: str,
+        ref: str | None = None,
+        name: str | None = None,
+        content_type: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        context: dict[str, Any] = {"type": "document_reference", "url": url}
+        if ref is not None:
+            context["ref"] = ref
+        if name is not None:
+            context["name"] = name
+        if content_type is not None:
+            context["content_type"] = content_type
+        if metadata:
+            context["metadata"] = dict(metadata)
+        return context
+
     def create_run(
         self,
         *,
@@ -166,17 +186,21 @@ class HAASClient:
         options: Mapping[str, Any] | None = None,
         worklog: bool | None = None,
         idempotency_key: str | None = None,
+        document_references: list[Mapping[str, Any]] | None = None,
         files: list[str | Path] | None = None,
         auto_idempotency_key: bool = True,
     ) -> dict[str, Any]:
         run_options = dict(options or {})
         if worklog is not None:
             run_options["worklog"] = worklog
+        run_context = list(context or [])
+        if document_references:
+            run_context.extend(self._normalize_document_references(document_references))
         payload: dict[str, Any] = {
             "tenant_id": tenant_id,
             "project_id": project_id,
             "input": {"prompt": prompt},
-            "context": list(context or []),
+            "context": run_context,
             "extensions": list(extensions or []),
             "metadata": dict(metadata or {}),
         }
@@ -358,6 +382,7 @@ class HAASClient:
         options: Mapping[str, Any] | None = None,
         worklog: bool | None = None,
         idempotency_key_prefix: str | None = None,
+        document_references: list[Mapping[str, Any]] | None = None,
         files: list[str | Path] | None = None,
         auto_idempotency_key: bool = True,
         cancel_on_submit_failure: bool = False,
@@ -386,6 +411,7 @@ class HAASClient:
             run_agent_options = self._merge_mapping(agent_options, spec.get("agent_options"))
             run_context = self._merge_sequence(context, spec.get("context"))
             run_extensions = self._merge_sequence(extensions, spec.get("extensions"))
+            run_document_references = self._merge_sequence(document_references, spec.get("document_references"))
             run_files = self._merge_sequence(files, spec.get("files"))
             run_options = self._merge_mapping(options, spec.get("options"))
             run_worklog = spec.get("worklog", worklog)
@@ -413,6 +439,7 @@ class HAASClient:
                     options=run_options or None,
                     worklog=run_worklog,
                     idempotency_key=idempotency_key,
+                    document_references=run_document_references or None,
                     files=run_files or None,
                     auto_idempotency_key=auto_idempotency_key,
                 )
@@ -725,6 +752,18 @@ class HAASClient:
             else:
                 merged.extend(value)
         return merged
+
+    def _normalize_document_references(self, references: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for index, reference in enumerate(references):
+            context = dict(reference)
+            context.setdefault("type", "document_reference")
+            if context["type"] != "document_reference":
+                raise ValueError(f"document reference at index {index} must have type=document_reference")
+            if not context.get("url"):
+                raise ValueError(f"document reference at index {index} is missing url")
+            normalized.append(context)
+        return normalized
 
     def _raise_for_error(self, response: httpx.Response) -> None:
         if response.status_code < 400:
