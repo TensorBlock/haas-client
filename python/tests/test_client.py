@@ -60,6 +60,39 @@ def test_create_run_merges_options_and_worklog_flag() -> None:
     assert seen["payload"]["options"] == {"trace": "compact", "worklog": False}
 
 
+def test_create_run_includes_document_references() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"run_id": "run_1", "status": "queued"})
+
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
+    reference = client.document_reference(
+        url="https://storage.example/documents/source.pdf?signature=test",
+        ref="cuey:source_document:doc_123",
+        name="source.pdf",
+        content_type="application/pdf",
+        metadata={"source": "cuey"},
+    )
+    client.create_run(
+        agent="claude-code",
+        prompt="Read the referenced document.",
+        document_references=[reference],
+    )
+
+    assert seen["payload"]["context"] == [
+        {
+            "type": "document_reference",
+            "url": "https://storage.example/documents/source.pdf?signature=test",
+            "ref": "cuey:source_document:doc_123",
+            "name": "source.pdf",
+            "content_type": "application/pdf",
+            "metadata": {"source": "cuey"},
+        }
+    ]
+
+
 def test_upload_file_sends_multipart_request(tmp_path: Path) -> None:
     upload_path = tmp_path / "input.txt"
     upload_path.write_text("hello upload", encoding="utf-8")
@@ -250,6 +283,7 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
     assert calls[0]["payload"]["metadata"] == {"pipeline_id": "pipe_1", "fanout_name": "codex"}
     assert calls[0]["payload"]["extensions"] == [{"type": "skill", "ref": "common", "version": "1.0.0"}]
     assert calls[0]["payload"]["options"] == {"trace": "compact", "worklog": True}
+    assert calls[0]["payload"]["context"] == []
 
     assert calls[1]["idempotency_key"] == "pipe_1:fanout:1:grok-deep"
     assert calls[1]["payload"]["agent"]["type"] == "grok"
@@ -269,6 +303,63 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
     assert calls[2]["payload"]["agent"]["type"] == "claude-code"
     assert calls[2]["payload"]["agent"]["options"]["max_turns"] == 3
     assert calls[2]["payload"]["project_id"] == "pipeline"
+
+
+def test_run_many_merges_document_references() -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(json.loads(request.content))
+        return httpx.Response(200, json={"run_id": f"run_{len(calls)}", "status": "queued"})
+
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
+    client.run_many(
+        agents=[
+            "codex",
+            {
+                "name": "claude",
+                "agent": "claude-code",
+                "document_references": [
+                    {
+                        "url": "https://storage.example/per-run.pdf?signature=test",
+                        "ref": "cuey:doc:per-run",
+                        "name": "per-run.pdf",
+                    }
+                ],
+            },
+        ],
+        prompt="Read documents.",
+        document_references=[
+            {
+                "url": "https://storage.example/shared.pdf?signature=test",
+                "ref": "cuey:doc:shared",
+                "name": "shared.pdf",
+            }
+        ],
+    )
+
+    assert calls[0]["context"] == [
+        {
+            "type": "document_reference",
+            "url": "https://storage.example/shared.pdf?signature=test",
+            "ref": "cuey:doc:shared",
+            "name": "shared.pdf",
+        }
+    ]
+    assert calls[1]["context"] == [
+        {
+            "type": "document_reference",
+            "url": "https://storage.example/shared.pdf?signature=test",
+            "ref": "cuey:doc:shared",
+            "name": "shared.pdf",
+        },
+        {
+            "type": "document_reference",
+            "url": "https://storage.example/per-run.pdf?signature=test",
+            "ref": "cuey:doc:per-run",
+            "name": "per-run.pdf",
+        },
+    ]
 
 
 def test_run_many_requires_prompt() -> None:

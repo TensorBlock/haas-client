@@ -85,8 +85,9 @@ for item in batch["runs"]:
 `run_many()` submits the runs and returns run ids immediately. `wait_many()`
 accepts either that return value or a list of run ids. Each agent entry can
 override shared fields such as `prompt`, `metadata`, `timeout_seconds`,
-`tools`, `context`, `extensions`, `files`, `options`, `worklog`, and
-`agent_options`; HAAS itself still only sees ordinary single-run API calls.
+`tools`, `context`, `document_references`, `extensions`, `files`, `options`,
+`worklog`, and `agent_options`; HAAS itself still only sees ordinary
+single-run API calls.
 
 Set `worklog=True` when a run should return a generated `worklog.md` artifact.
 The worklog records the run metadata, lifecycle timeline, final message, error,
@@ -137,6 +138,27 @@ run = client.run_and_wait(
     agent="claude-code",
     prompt="Read the attached spreadsheet and summarize it.",
     files=["input.xlsx"],
+    raise_on_failure=True,
+)
+```
+
+Pass already-persisted backend documents as references. HAAS downloads each
+signed URL into the run sandbox and exposes it to the agent as a normal context
+file under `.haas/context/`:
+
+```python
+source_document = client.document_reference(
+    url="https://storage.example/documents/source.pdf?signature=...",
+    ref="cuey:source_document:doc_123",
+    name="source.pdf",
+    content_type="application/pdf",
+    metadata={"source": "cuey"},
+)
+
+run = client.run_and_wait(
+    agent="claude-code",
+    prompt="Read the referenced source document and summarize it.",
+    document_references=[source_document],
     raise_on_failure=True,
 )
 ```
