@@ -41,7 +41,6 @@ def main() -> None:
             run_group_id = run_group_prefix if args.groups == 1 else f"{run_group_prefix}-{group_index + 1}"
             metadata = {
                 **extra_metadata,
-                "run_group_id": run_group_id,
                 "acceptance_kind": "fanout",
                 "acceptance_group_index": str(group_index),
             }
@@ -53,6 +52,7 @@ def main() -> None:
                     tenant_id=args.tenant_id,
                     project_id=args.project_id,
                     metadata=metadata,
+                    run_group_id=run_group_id,
                     extensions=extensions,
                     worklog=args.worklog,
                     timeout_seconds=args.timeout_seconds,
@@ -71,7 +71,6 @@ def main() -> None:
                 )
                 raise
 
-            created["run_group_id"] = run_group_id
             created_batches.append(created)
             for item in created["runs"]:
                 run_id_to_group[item["run_id"]] = run_group_id
