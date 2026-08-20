@@ -287,6 +287,25 @@ class HAASClient:
             metadata_value=run_group_id,
         )
 
+    def get_run_group(
+        self,
+        run_group_id: str,
+        *,
+        limit: int = 100,
+        tenant_id: str | None = None,
+        project_id: str | None = None,
+    ) -> dict[str, Any]:
+        params: dict[str, Any] = {"limit": limit}
+        if tenant_id is not None:
+            params["tenant_id"] = tenant_id
+        if project_id is not None:
+            params["project_id"] = project_id
+        return self._request(
+            "GET",
+            f"/v1/run-groups/{quote(run_group_id, safe='')}",
+            params=params,
+        )
+
     def list_events(self, run_id: str, *, after_id: int = 0, limit: int = 100) -> list[dict[str, Any]]:
         return self._request(
             "GET",
@@ -381,6 +400,8 @@ class HAASClient:
         metadata: Mapping[str, Any] | None = None,
         options: Mapping[str, Any] | None = None,
         worklog: bool | None = None,
+        run_group_id: str | None = None,
+        auto_run_group_id: bool = True,
         idempotency_key_prefix: str | None = None,
         document_references: list[Mapping[str, Any]] | None = None,
         files: list[str | Path] | None = None,
@@ -398,6 +419,10 @@ class HAASClient:
         generated_idempotency_key_prefix = None
         if idempotency_key_prefix is None and auto_idempotency_key:
             generated_idempotency_key_prefix = f"haas-client:fanout:{uuid.uuid4().hex}"
+        shared_metadata = dict(metadata or {})
+        resolved_run_group_id = run_group_id or shared_metadata.get("run_group_id")
+        if resolved_run_group_id is None and auto_run_group_id:
+            resolved_run_group_id = f"haas-client:fanout:{uuid.uuid4().hex}"
         for index, entry in enumerate(agents):
             spec = self._normalize_run_many_entry(entry, index)
             run_prompt = spec.get("prompt", prompt)
@@ -405,7 +430,9 @@ class HAASClient:
                 raise ValueError("run_many requires a shared prompt or a prompt on every agent spec")
 
             name = spec.get("name")
-            run_metadata = self._merge_mapping(metadata, spec.get("metadata"))
+            run_metadata = self._merge_mapping(shared_metadata, spec.get("metadata"))
+            if resolved_run_group_id is not None:
+                run_metadata.setdefault("run_group_id", resolved_run_group_id)
             if name is not None:
                 run_metadata.setdefault("fanout_name", name)
             run_agent_options = self._merge_mapping(agent_options, spec.get("agent_options"))
@@ -456,6 +483,7 @@ class HAASClient:
                     "name": name,
                     "agent": spec["agent"],
                     "run_id": created["run_id"],
+                    "run_group_id": run_metadata.get("run_group_id"),
                     "created": created,
                 }
             )
@@ -685,6 +713,7 @@ class HAASClient:
         return {
             "count": len(runs),
             "run_ids": [item["run_id"] for item in runs],
+            "run_group_id": self._common_run_group_id(runs),
             "runs": runs,
         }
 
@@ -712,6 +741,7 @@ class HAASClient:
                 "name": entry.get("name"),
                 "agent": entry.get("agent"),
                 "run_id": entry["run_id"],
+                "run_group_id": entry.get("run_group_id"),
                 "status": record.get("status"),
                 "record": record,
             }
@@ -723,10 +753,18 @@ class HAASClient:
         return {
             "count": len(runs),
             "run_ids": [item["run_id"] for item in runs],
+            "run_group_id": self._common_run_group_id(runs),
             "runs": runs,
             "succeeded": succeeded,
             "failed": failed,
         }
+
+    def _common_run_group_id(self, runs: Sequence[Mapping[str, Any]]) -> str | None:
+        group_ids = {item.get("run_group_id") for item in runs if item.get("run_group_id") is not None}
+        if len(group_ids) == 1:
+            value = next(iter(group_ids))
+            return value if isinstance(value, str) else None
+        return None
 
     def _merge_mapping(
         self,

@@ -270,6 +270,7 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
         prompt="shared prompt",
         project_id="pipeline",
         metadata={"pipeline_id": "pipe_1"},
+        run_group_id="pipe_1",
         extensions=[{"type": "skill", "ref": "common", "version": "1.0.0"}],
         options={"trace": "compact"},
         worklog=True,
@@ -277,10 +278,15 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
     )
 
     assert batch["run_ids"] == ["run_1", "run_2", "run_3"]
+    assert batch["run_group_id"] == "pipe_1"
     assert calls[0]["idempotency_key"] == "pipe_1:fanout:0:codex"
     assert calls[0]["payload"]["agent"]["type"] == "codex"
     assert calls[0]["payload"]["input"]["prompt"] == "shared prompt"
-    assert calls[0]["payload"]["metadata"] == {"pipeline_id": "pipe_1", "fanout_name": "codex"}
+    assert calls[0]["payload"]["metadata"] == {
+        "pipeline_id": "pipe_1",
+        "run_group_id": "pipe_1",
+        "fanout_name": "codex",
+    }
     assert calls[0]["payload"]["extensions"] == [{"type": "skill", "ref": "common", "version": "1.0.0"}]
     assert calls[0]["payload"]["options"] == {"trace": "compact", "worklog": True}
     assert calls[0]["payload"]["context"] == []
@@ -292,6 +298,7 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
     assert calls[1]["payload"]["metadata"] == {
         "pipeline_id": "pipe_1",
         "lane": "deep",
+        "run_group_id": "pipe_1",
         "fanout_name": "grok-deep",
     }
     assert calls[1]["payload"]["options"] == {"trace": "compact", "worklog": False}
@@ -659,6 +666,41 @@ def test_list_run_group_uses_metadata_contract() -> None:
     client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
 
     assert client.list_run_group("group_1", project_id="pipeline") == []
+
+
+def test_get_run_group_summary() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.method == "GET"
+        assert request.url.path == "/v1/run-groups/pipeline-run-123"
+        assert request.url.params["tenant_id"] == "internal"
+        assert request.url.params["project_id"] == "pipeline"
+        assert request.url.params["limit"] == "25"
+        return httpx.Response(
+            200,
+            json={
+                "run_group_id": "pipeline-run-123",
+                "status": "succeeded",
+                "run_count": 2,
+                "status_counts": {"succeeded": 2},
+                "tenant_ids": ["internal"],
+                "project_ids": ["pipeline"],
+                "created_at": "2026-07-27T00:00:00+00:00",
+                "artifact_count": 0,
+                "artifacts": [],
+                "runs": [],
+            },
+        )
+
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
+    summary = client.get_run_group(
+        "pipeline-run-123",
+        tenant_id="internal",
+        project_id="pipeline",
+        limit=25,
+    )
+
+    assert summary["run_group_id"] == "pipeline-run-123"
+    assert summary["status"] == "succeeded"
 
 
 def test_wait_run_can_raise_on_failed_terminal_record() -> None:

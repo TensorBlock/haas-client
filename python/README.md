@@ -72,6 +72,7 @@ batch = client.run_many_and_wait(
     prompt="Run this pipeline task and return the final deliverables.",
     extensions=[{"type": "skill", "ref": "common-pipeline", "version": "1.0.0"}],
     project_id="pipeline",
+    run_group_id="pipeline-run-123",
     worklog=True,
     idempotency_key_prefix="pipeline-run-123:fanout",
     timeout_seconds=1800,
@@ -86,8 +87,9 @@ for item in batch["runs"]:
 accepts either that return value or a list of run ids. Each agent entry can
 override shared fields such as `prompt`, `metadata`, `timeout_seconds`,
 `tools`, `context`, `document_references`, `extensions`, `files`, `options`,
-`worklog`, and `agent_options`; HAAS itself still only sees ordinary
-single-run API calls.
+`worklog`, and `agent_options`. `run_many()` stores a shared `run_group_id` in
+each child run's metadata so HAAS can schedule and inspect the fanout as one
+batch while still preserving the ordinary single-run API.
 
 Set `worklog=True` when a run should return a generated `worklog.md` artifact.
 The worklog records the run metadata, lifecycle timeline, final message, error,
@@ -107,12 +109,16 @@ raises `HAASPartialBatchError` with the created run ids. Set
 `cancel_on_submit_failure=True` when a partial fanout should be cancelled rather
 than allowed to continue.
 
-Use `metadata.run_group_id` as the pipeline observability contract when a group
-of single-run requests belong to one fanout. HAAS can list that group directly:
+Use `run_group_id` as the pipeline observability contract when a group of
+single-run requests belong to one fanout. HAAS can return either a group summary
+or the raw child runs:
 
 ```python
+group = client.get_run_group("pipeline-run-123", project_id="pipeline")
+print(group["status"], group["status_counts"])
+
 runs = client.list_run_group("pipeline-run-123", project_id="pipeline")
-print([run["status"] for run in runs])
+print([(run["agent"]["type"], run["status"]) for run in runs])
 ```
 
 Run the production fanout acceptance script before wiring HAAS into a pipeline
