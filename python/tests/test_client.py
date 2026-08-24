@@ -93,6 +93,43 @@ def test_create_run_includes_document_references() -> None:
     ]
 
 
+def test_create_run_includes_resources_and_extension_routing() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"run_id": "run_1", "status": "queued"})
+
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
+    client.create_run(
+        agent="codex",
+        prompt="hello",
+        resources={
+            "profile": "file-heavy",
+            "image_profile": "office-tools",
+            "resource_class": "file-heavy",
+        },
+        extension_routing={
+            "strategy": "manual-v1",
+            "selected": [],
+            "available": [],
+            "skipped": [],
+        },
+    )
+
+    assert seen["payload"]["resources"] == {
+        "profile": "file-heavy",
+        "image_profile": "office-tools",
+        "resource_class": "file-heavy",
+    }
+    assert seen["payload"]["extension_routing"] == {
+        "strategy": "manual-v1",
+        "selected": [],
+        "available": [],
+        "skipped": [],
+    }
+
+
 def test_upload_file_sends_multipart_request(tmp_path: Path) -> None:
     upload_path = tmp_path / "input.txt"
     upload_path.write_text("hello upload", encoding="utf-8")
@@ -240,6 +277,49 @@ def test_skill_discovery_methods() -> None:
     ]
 
 
+def test_plugin_discovery_methods() -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path, dict(request.url.params)))
+        if request.url.path == "/v1/extensions/plugins":
+            return httpx.Response(
+                200,
+                json=[
+                    {
+                        "ref": "pdf-linux",
+                        "latest_version": "0.2.0",
+                        "selected_version": None,
+                        "targets": ["codex"],
+                        "versions": [],
+                        "metadata": {"description": "PDF plugin"},
+                    }
+                ],
+            )
+        if request.url.path == "/v1/extensions/plugins/pdf-linux":
+            return httpx.Response(
+                200,
+                json={
+                    "ref": "pdf-linux",
+                    "latest_version": "0.2.0",
+                    "selected_version": "0.1.0",
+                    "targets": ["codex"],
+                    "versions": [],
+                    "metadata": {"description": "Old PDF plugin"},
+                },
+            )
+        return httpx.Response(404)
+
+    client = HAASClient("https://haas.example", token="secret", transport=httpx.MockTransport(handler))
+
+    assert client.list_plugins()[0]["ref"] == "pdf-linux"
+    assert client.get_plugin("pdf-linux", version="0.1.0")["selected_version"] == "0.1.0"
+    assert calls == [
+        ("GET", "/v1/extensions/plugins", {}),
+        ("GET", "/v1/extensions/plugins/pdf-linux", {"version": "0.1.0"}),
+    ]
+
+
 def test_run_many_submits_dynamic_agent_contract() -> None:
     calls = []
 
@@ -263,6 +343,7 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
                 "prompt": "custom grok prompt",
                 "metadata": {"lane": "deep"},
                 "worklog": False,
+                "resources": {"profile": "heavy", "image_profile": "office-tools"},
                 "extensions": [{"type": "skill", "ref": "grok-extra", "version": "0.2.0"}],
             },
             {"name": "claude", "type": "claude-code", "options": {"max_turns": 3}},
@@ -272,6 +353,7 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
         metadata={"pipeline_id": "pipe_1"},
         run_group_id="pipe_1",
         extensions=[{"type": "skill", "ref": "common", "version": "1.0.0"}],
+        resources={"profile": "standard", "metadata": {"contract": "shared"}},
         options={"trace": "compact"},
         worklog=True,
         idempotency_key_prefix="pipe_1:fanout",
@@ -288,6 +370,10 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
         "fanout_name": "codex",
     }
     assert calls[0]["payload"]["extensions"] == [{"type": "skill", "ref": "common", "version": "1.0.0"}]
+    assert calls[0]["payload"]["resources"] == {
+        "profile": "standard",
+        "metadata": {"contract": "shared"},
+    }
     assert calls[0]["payload"]["options"] == {"trace": "compact", "worklog": True}
     assert calls[0]["payload"]["context"] == []
 
@@ -306,6 +392,11 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
         {"type": "skill", "ref": "common", "version": "1.0.0"},
         {"type": "skill", "ref": "grok-extra", "version": "0.2.0"},
     ]
+    assert calls[1]["payload"]["resources"] == {
+        "profile": "heavy",
+        "metadata": {"contract": "shared"},
+        "image_profile": "office-tools",
+    }
 
     assert calls[2]["payload"]["agent"]["type"] == "claude-code"
     assert calls[2]["payload"]["agent"]["options"]["max_turns"] == 3

@@ -6,6 +6,9 @@ HAAS exposes agent harness runtimes through an HTTP API. This repository contain
 language-specific SDKs that wrap the run, polling, artifact, event, delivery,
 and extension APIs for application backends and pipelines.
 
+This repository is the source of truth for HAAS SDKs. The HAAS server repository
+should reference this package instead of carrying an embedded Python client copy.
+
 ## SDKs
 
 - Python: [`python/`](python/)
@@ -38,6 +41,7 @@ client = HAASClient(
 run = client.run_and_wait(
     agent="codex",
     prompt="Hello world. Reply with a short greeting.",
+    resources={"profile": "standard"},
     worklog=True,
     raise_on_failure=True,
 )
@@ -55,6 +59,7 @@ export HAAS_API_TOKEN="..."
 haas-fanout-acceptance \
   --base-url https://haas-api-production.up.railway.app \
   --agents codex,claude-code,grok \
+  --resources '{"profile":"standard"}' \
   --groups 1 \
   --worklog
 ```

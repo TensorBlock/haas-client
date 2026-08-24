@@ -55,6 +55,35 @@ run = client.run_and_wait(
 )
 ```
 
+Attach harness-native plugins:
+
+```python
+plugins = client.list_plugins()
+assert any(plugin["ref"] == "pdf-linux" for plugin in plugins)
+client.get_plugin("pdf-linux", version="0.1.0")
+
+run = client.run_and_wait(
+    agent="codex",
+    prompt="Create a simple PDF summary.",
+    extensions=[
+        {"type": "plugin", "ref": "pdf-linux", "version": "0.1.0", "targets": ["codex"]},
+    ],
+    raise_on_failure=True,
+)
+```
+
+Select a resource profile when a run needs a heavier sandbox or warm image:
+
+```python
+run = client.run_and_wait(
+    agent="claude-code",
+    prompt="Read the attached PDF and workbook, then write output/summary.md.",
+    files=["paper.pdf", "model.xlsx"],
+    resources={"profile": "file-heavy"},
+    raise_on_failure=True,
+)
+```
+
 Fan out one task to a dynamic set of agents:
 
 ```python
@@ -66,6 +95,7 @@ batch = client.run_many_and_wait(
             "name": "grok-deep",
             "agent": {"type": "grok", "options": {"model": "grok-4.5"}},
             "metadata": {"lane": "deep"},
+            "resources": {"profile": "heavy"},
             "extensions": [{"type": "skill", "ref": "grok-reporting", "version": "0.1.0"}],
         },
     ],
@@ -73,6 +103,7 @@ batch = client.run_many_and_wait(
     extensions=[{"type": "skill", "ref": "common-pipeline", "version": "1.0.0"}],
     project_id="pipeline",
     run_group_id="pipeline-run-123",
+    resources={"profile": "file-heavy"},
     worklog=True,
     idempotency_key_prefix="pipeline-run-123:fanout",
     timeout_seconds=1800,
@@ -86,10 +117,10 @@ for item in batch["runs"]:
 `run_many()` submits the runs and returns run ids immediately. `wait_many()`
 accepts either that return value or a list of run ids. Each agent entry can
 override shared fields such as `prompt`, `metadata`, `timeout_seconds`,
-`tools`, `context`, `document_references`, `extensions`, `files`, `options`,
-`worklog`, and `agent_options`. `run_many()` stores a shared `run_group_id` in
-each child run's metadata so HAAS can schedule and inspect the fanout as one
-batch while still preserving the ordinary single-run API.
+`tools`, `context`, `document_references`, `extensions`, `resources`, `files`,
+`options`, `worklog`, and `agent_options`. `run_many()` stores a shared
+`run_group_id` in each child run's metadata so HAAS can schedule and inspect the
+fanout as one batch while still preserving the ordinary single-run API.
 
 Set `worklog=True` when a run should return a generated `worklog.md` artifact.
 The worklog records the run metadata, lifecycle timeline, final message, error,
@@ -129,6 +160,7 @@ export HAAS_API_TOKEN="..."
 haas-fanout-acceptance \
   --base-url https://haas-api-production.up.railway.app \
   --agents codex,claude-code,grok \
+  --resources '{"profile":"standard"}' \
   --groups 1 \
   --worklog
 ```

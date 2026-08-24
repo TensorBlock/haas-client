@@ -103,6 +103,16 @@ class HAASClient:
             params={"version": version},
         )
 
+    def list_plugins(self) -> list[dict[str, Any]]:
+        return self._request("GET", "/v1/extensions/plugins")
+
+    def get_plugin(self, ref: str, *, version: str = "latest") -> dict[str, Any]:
+        return self._request(
+            "GET",
+            f"/v1/extensions/plugins/{quote(ref, safe='')}",
+            params={"version": version},
+        )
+
     def get_system_status(self) -> dict[str, Any]:
         return self._request("GET", "/v1/system/status")
 
@@ -178,7 +188,9 @@ class HAASClient:
         agent_options: Mapping[str, Any] | None = None,
         context: list[Mapping[str, Any]] | None = None,
         extensions: list[Mapping[str, Any]] | None = None,
+        extension_routing: Mapping[str, Any] | None = None,
         tools: Mapping[str, Any] | None = None,
+        resources: Mapping[str, Any] | None = None,
         memory: Mapping[str, Any] | None = None,
         delivery: Mapping[str, Any] | None = None,
         timeout_seconds: int | None = None,
@@ -212,10 +224,14 @@ class HAASClient:
             payload["timeout_seconds"] = timeout_seconds
         if tools is not None:
             payload["tools"] = dict(tools)
+        if resources is not None:
+            payload["resources"] = dict(resources)
         if memory is not None:
             payload["memory"] = dict(memory)
         if delivery is not None:
             payload["delivery"] = dict(delivery)
+        if extension_routing is not None:
+            payload["extension_routing"] = dict(extension_routing)
 
         if isinstance(agent, str):
             payload["agent"] = {
@@ -393,7 +409,9 @@ class HAASClient:
         agent_options: Mapping[str, Any] | None = None,
         context: list[Mapping[str, Any]] | None = None,
         extensions: list[Mapping[str, Any]] | None = None,
+        extension_routing: Mapping[str, Any] | None = None,
         tools: Mapping[str, Any] | None = None,
+        resources: Mapping[str, Any] | None = None,
         memory: Mapping[str, Any] | None = None,
         delivery: Mapping[str, Any] | None = None,
         timeout_seconds: int | None = None,
@@ -438,8 +456,10 @@ class HAASClient:
             run_agent_options = self._merge_mapping(agent_options, spec.get("agent_options"))
             run_context = self._merge_sequence(context, spec.get("context"))
             run_extensions = self._merge_sequence(extensions, spec.get("extensions"))
+            run_extension_routing = self._merge_mapping(extension_routing, spec.get("extension_routing"))
             run_document_references = self._merge_sequence(document_references, spec.get("document_references"))
             run_files = self._merge_sequence(files, spec.get("files"))
+            run_resources = self._merge_mapping(resources, spec.get("resources"))
             run_options = self._merge_mapping(options, spec.get("options"))
             run_worklog = spec.get("worklog", worklog)
             idempotency_key = spec.get("idempotency_key")
@@ -458,7 +478,9 @@ class HAASClient:
                     agent_options=run_agent_options or None,
                     context=run_context or None,
                     extensions=run_extensions or None,
+                    extension_routing=run_extension_routing or None,
                     tools=self._merge_mapping(tools, spec.get("tools")) or None,
+                    resources=run_resources or None,
                     memory=self._merge_mapping(memory, spec.get("memory")) or None,
                     delivery=self._merge_mapping(delivery, spec.get("delivery")) or None,
                     timeout_seconds=spec.get("timeout_seconds", timeout_seconds),

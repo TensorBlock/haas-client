@@ -26,6 +26,7 @@ def main() -> None:
     run_group_prefix = args.run_group_id or f"fanout-acceptance-{int(time.time())}-{uuid.uuid4().hex[:8]}"
     extra_metadata = parse_json_object(args.metadata, "--metadata")
     extensions = parse_json_list(args.extensions, "--extensions")
+    resources = parse_json_object(args.resources, "--resources")
 
     created_batches: list[dict[str, Any]] = []
     run_id_to_group: dict[str, str] = {}
@@ -54,6 +55,7 @@ def main() -> None:
                     metadata=metadata,
                     run_group_id=run_group_id,
                     extensions=extensions,
+                    resources=resources,
                     worklog=args.worklog,
                     timeout_seconds=args.timeout_seconds,
                     idempotency_key_prefix=f"{idempotency_prefix}:fanout",
@@ -141,6 +143,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--idempotency-key-prefix", default=None)
     parser.add_argument("--metadata", default="{}")
     parser.add_argument("--extensions", default="[]")
+    parser.add_argument("--resources", default="{}")
     parser.add_argument("--timeout-seconds", type=int, default=300)
     parser.add_argument("--wait-timeout-seconds", type=float, default=1800)
     parser.add_argument("--poll-interval-seconds", type=float, default=5)
