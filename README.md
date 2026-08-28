@@ -9,6 +9,9 @@ and extension APIs for application backends and pipelines.
 This repository is the source of truth for HAAS SDKs. The HAAS server repository
 should reference this package instead of carrying an embedded Python client copy.
 
+Harness model, provider, and credential routing are owned by the HAAS server.
+SDK calls select a harness, while the server resolves the execution binding.
+
 ## SDKs
 
 - Python: [`python/`](python/)

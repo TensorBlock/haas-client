@@ -91,13 +91,7 @@ batch = client.run_many_and_wait(
     agents=[
         "codex",
         {"name": "claude", "agent": "claude-code"},
-        {
-            "name": "grok-deep",
-            "agent": {"type": "grok", "options": {"model": "grok-4.5"}},
-            "metadata": {"lane": "deep"},
-            "resources": {"profile": "heavy"},
-            "extensions": [{"type": "skill", "ref": "grok-reporting", "version": "0.1.0"}],
-        },
+        {"name": "grok-deep", "agent": "grok"},
     ],
     prompt="Run this pipeline task and return the final deliverables.",
     extensions=[{"type": "skill", "ref": "common-pipeline", "version": "1.0.0"}],
@@ -115,12 +109,18 @@ for item in batch["runs"]:
 ```
 
 `run_many()` submits the runs and returns run ids immediately. `wait_many()`
-accepts either that return value or a list of run ids. Each agent entry can
-override shared fields such as `prompt`, `metadata`, `timeout_seconds`,
-`tools`, `context`, `document_references`, `extensions`, `resources`, `files`,
-`options`, `worklog`, and `agent_options`. `run_many()` stores a shared
+accepts either that return value or a list of run ids. Shared task fields such
+as `prompt`, `metadata`, `timeout_seconds`, `tools`, `context`,
+`document_references`, `extensions`, `resources`, `files`, `options`, and
+`worklog` are applied to every child run. `run_many()` stores a shared
 `run_group_id` in each child run's metadata so HAAS can schedule and inspect the
 fanout as one batch while still preserving the ordinary single-run API.
+
+Harness model, provider, and credential routing are server-owned. `create_run()`
+sends only `{"agent": {"type": "..."}}`; `run_many()` entries may only name
+the business role and harness. `credential_profile="default"` is a temporary
+no-op for compatibility, while non-default credential profiles, `agent_options`,
+and arbitrary agent mappings are rejected by the client.
 
 Set `worklog=True` when a run should return a generated `worklog.md` artifact.
 The worklog records the run metadata, lifecycle timeline, final message, error,

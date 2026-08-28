@@ -28,10 +28,23 @@ def test_create_run_sends_auth_and_payload() -> None:
     assert created["run_id"] == "run_1"
     assert seen["auth"] == "Bearer secret"
     assert seen["idempotency_key"] == "step-1"
-    assert seen["payload"]["agent"]["type"] == "codex"
+    assert seen["payload"]["agent"] == {"type": "codex"}
     assert seen["payload"]["input"]["prompt"] == "hello"
     assert seen["payload"]["extensions"] == []
     assert seen["payload"]["timeout_seconds"] == 120
+
+
+def test_default_credential_profile_is_a_noop() -> None:
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"run_id": "run_1", "status": "queued"})
+
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
+    client.create_run(agent="codex", prompt="hello", credential_profile="default")
+
+    assert seen["payload"]["agent"] == {"type": "codex"}
 
 
 def test_create_run_can_request_worklog_artifact() -> None:
@@ -337,16 +350,8 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
     batch = client.run_many(
         agents=[
             "codex",
-            {
-                "name": "grok-deep",
-                "agent": {"type": "grok", "options": {"model": "grok-4.5"}},
-                "prompt": "custom grok prompt",
-                "metadata": {"lane": "deep"},
-                "worklog": False,
-                "resources": {"profile": "heavy", "image_profile": "office-tools"},
-                "extensions": [{"type": "skill", "ref": "grok-extra", "version": "0.2.0"}],
-            },
-            {"name": "claude", "type": "claude-code", "options": {"max_turns": 3}},
+            {"name": "grok-deep", "agent": "grok"},
+            {"name": "claude", "agent": "claude-code"},
         ],
         prompt="shared prompt",
         project_id="pipeline",
@@ -378,32 +383,71 @@ def test_run_many_submits_dynamic_agent_contract() -> None:
     assert calls[0]["payload"]["context"] == []
 
     assert calls[1]["idempotency_key"] == "pipe_1:fanout:1:grok-deep"
-    assert calls[1]["payload"]["agent"]["type"] == "grok"
-    assert calls[1]["payload"]["agent"]["options"]["model"] == "grok-4.5"
-    assert calls[1]["payload"]["input"]["prompt"] == "custom grok prompt"
+    assert calls[1]["payload"]["agent"] == {"type": "grok"}
+    assert calls[1]["payload"]["input"]["prompt"] == "shared prompt"
     assert calls[1]["payload"]["metadata"] == {
         "pipeline_id": "pipe_1",
-        "lane": "deep",
         "run_group_id": "pipe_1",
         "fanout_name": "grok-deep",
     }
-    assert calls[1]["payload"]["options"] == {"trace": "compact", "worklog": False}
-    assert calls[1]["payload"]["extensions"] == [
-        {"type": "skill", "ref": "common", "version": "1.0.0"},
-        {"type": "skill", "ref": "grok-extra", "version": "0.2.0"},
-    ]
+    assert calls[1]["payload"]["options"] == {"trace": "compact", "worklog": True}
+    assert calls[1]["payload"]["extensions"] == [{"type": "skill", "ref": "common", "version": "1.0.0"}]
     assert calls[1]["payload"]["resources"] == {
-        "profile": "heavy",
+        "profile": "standard",
         "metadata": {"contract": "shared"},
-        "image_profile": "office-tools",
     }
 
-    assert calls[2]["payload"]["agent"]["type"] == "claude-code"
-    assert calls[2]["payload"]["agent"]["options"]["max_turns"] == 3
+    assert calls[2]["payload"]["agent"] == {"type": "claude-code"}
     assert calls[2]["payload"]["project_id"] == "pipeline"
 
 
-def test_run_many_merges_document_references() -> None:
+def test_client_rejects_execution_routing_inputs() -> None:
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(lambda request: httpx.Response(200)))
+
+    with pytest.raises(ValueError, match="credential_profile is deprecated"):
+        client.create_run(agent="codex", prompt="hello", credential_profile="other")
+    with pytest.raises(ValueError, match="agent_options are deprecated"):
+        client.create_run(agent="codex", prompt="hello", agent_options={"model": "gpt"})
+    with pytest.raises(ValueError, match="agent must be a non-empty harness string"):
+        client.create_run(agent={"type": "codex"}, prompt="hello")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="only name and agent"):
+        client.run_many(
+            agents=[{"name": "reviewer", "agent": "codex", "options": {"model": "gpt"}}],
+            prompt="hello",
+        )
+
+
+@pytest.mark.parametrize(
+    "execution_override",
+    [
+        {"options": {"model": "grok-4.5"}},
+        {"model_profile": "grok-api"},
+        {"credential_profile": "grok-api"},
+    ],
+)
+def test_run_many_preflights_all_entries_before_submission(execution_override: dict[str, object]) -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.method, request.url.path))
+        return httpx.Response(200, json={"run_id": "run_1", "status": "queued"})
+
+    client = HAASClient("https://haas.example", transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ValueError, match="only name and agent"):
+        client.run_many(
+            agents=[
+                "codex",
+                {"name": "reviewer", "agent": "grok", **execution_override},
+            ],
+            prompt="hello",
+            cancel_on_submit_failure=True,
+        )
+
+    assert calls == []
+
+
+def test_run_many_applies_shared_document_references() -> None:
     calls = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -414,17 +458,7 @@ def test_run_many_merges_document_references() -> None:
     client.run_many(
         agents=[
             "codex",
-            {
-                "name": "claude",
-                "agent": "claude-code",
-                "document_references": [
-                    {
-                        "url": "https://storage.example/per-run.pdf?signature=test",
-                        "ref": "cuey:doc:per-run",
-                        "name": "per-run.pdf",
-                    }
-                ],
-            },
+            {"name": "claude", "agent": "claude-code"},
         ],
         prompt="Read documents.",
         document_references=[
@@ -444,20 +478,7 @@ def test_run_many_merges_document_references() -> None:
             "name": "shared.pdf",
         }
     ]
-    assert calls[1]["context"] == [
-        {
-            "type": "document_reference",
-            "url": "https://storage.example/shared.pdf?signature=test",
-            "ref": "cuey:doc:shared",
-            "name": "shared.pdf",
-        },
-        {
-            "type": "document_reference",
-            "url": "https://storage.example/per-run.pdf?signature=test",
-            "ref": "cuey:doc:per-run",
-            "name": "per-run.pdf",
-        },
-    ]
+    assert calls[1]["context"] == calls[0]["context"]
 
 
 def test_run_many_requires_prompt() -> None:

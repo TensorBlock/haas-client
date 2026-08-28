@@ -179,12 +179,12 @@ class HAASClient:
     def create_run(
         self,
         *,
-        agent: str | Mapping[str, Any] = "codex",
+        agent: str = "codex",
         prompt: str,
         tenant_id: str = "internal",
         project_id: str = "default",
         user_id: str | None = None,
-        credential_profile: str = "default",
+        credential_profile: str | None = None,
         agent_options: Mapping[str, Any] | None = None,
         context: list[Mapping[str, Any]] | None = None,
         extensions: list[Mapping[str, Any]] | None = None,
@@ -233,16 +233,11 @@ class HAASClient:
         if extension_routing is not None:
             payload["extension_routing"] = dict(extension_routing)
 
-        if isinstance(agent, str):
-            payload["agent"] = {
-                "type": agent,
-                "credential_profile": credential_profile,
-            }
-        else:
-            payload["agent"] = dict(agent)
-
-        if agent_options is not None:
-            payload["agent"].setdefault("options", {}).update(dict(agent_options))
+        self._validate_deprecated_execution_options(
+            credential_profile=credential_profile,
+            agent_options=agent_options,
+        )
+        payload["agent"] = {"type": self._normalize_harness(agent)}
 
         resolved_idempotency_key = idempotency_key
         if resolved_idempotency_key is None and auto_idempotency_key:
@@ -374,7 +369,7 @@ class HAASClient:
     def run_and_wait(
         self,
         *,
-        agent: str | Mapping[str, Any] = "codex",
+        agent: str = "codex",
         prompt: str,
         timeout_seconds: int | None = None,
         wait_timeout_seconds: float = 600.0,
@@ -405,7 +400,7 @@ class HAASClient:
         tenant_id: str = "internal",
         project_id: str = "default",
         user_id: str | None = None,
-        credential_profile: str = "default",
+        credential_profile: str | None = None,
         agent_options: Mapping[str, Any] | None = None,
         context: list[Mapping[str, Any]] | None = None,
         extensions: list[Mapping[str, Any]] | None = None,
@@ -428,11 +423,21 @@ class HAASClient:
     ) -> dict[str, Any]:
         """Submit a dynamic fanout batch.
 
-        Each item in ``agents`` may be:
-        - an agent type string, e.g. ``"codex"``;
-        - an HAAS agent object, e.g. ``{"type": "grok", "options": {...}}``;
-        - a run spec with an ``agent`` key plus optional per-run overrides.
+        Each item in ``agents`` may be a harness string, e.g. ``"codex"``,
+        or a business label plus harness, e.g. ``{"name": "reviewer",
+        "agent": "codex"}``. Per-entry execution configuration is owned by
+        the HAAS server and is intentionally not accepted by the client.
         """
+        self._validate_deprecated_execution_options(
+            credential_profile=credential_profile,
+            agent_options=agent_options,
+        )
+        if prompt is None:
+            raise ValueError("run_many requires a shared prompt")
+        specs = [
+            self._normalize_run_many_entry(entry, index)
+            for index, entry in enumerate(agents)
+        ]
         created_runs: list[dict[str, Any]] = []
         generated_idempotency_key_prefix = None
         if idempotency_key_prefix is None and auto_idempotency_key:
@@ -441,28 +446,14 @@ class HAASClient:
         resolved_run_group_id = run_group_id or shared_metadata.get("run_group_id")
         if resolved_run_group_id is None and auto_run_group_id:
             resolved_run_group_id = f"haas-client:fanout:{uuid.uuid4().hex}"
-        for index, entry in enumerate(agents):
-            spec = self._normalize_run_many_entry(entry, index)
-            run_prompt = spec.get("prompt", prompt)
-            if run_prompt is None:
-                raise ValueError("run_many requires a shared prompt or a prompt on every agent spec")
-
+        for index, spec in enumerate(specs):
             name = spec.get("name")
-            run_metadata = self._merge_mapping(shared_metadata, spec.get("metadata"))
+            run_metadata = dict(shared_metadata)
             if resolved_run_group_id is not None:
                 run_metadata.setdefault("run_group_id", resolved_run_group_id)
             if name is not None:
                 run_metadata.setdefault("fanout_name", name)
-            run_agent_options = self._merge_mapping(agent_options, spec.get("agent_options"))
-            run_context = self._merge_sequence(context, spec.get("context"))
-            run_extensions = self._merge_sequence(extensions, spec.get("extensions"))
-            run_extension_routing = self._merge_mapping(extension_routing, spec.get("extension_routing"))
-            run_document_references = self._merge_sequence(document_references, spec.get("document_references"))
-            run_files = self._merge_sequence(files, spec.get("files"))
-            run_resources = self._merge_mapping(resources, spec.get("resources"))
-            run_options = self._merge_mapping(options, spec.get("options"))
-            run_worklog = spec.get("worklog", worklog)
-            idempotency_key = spec.get("idempotency_key")
+            idempotency_key = None
             key_prefix = idempotency_key_prefix or generated_idempotency_key_prefix
             if idempotency_key is None and key_prefix:
                 idempotency_key = f"{key_prefix}:{index}:{name or 'run'}"
@@ -470,26 +461,24 @@ class HAASClient:
             try:
                 created = self.create_run(
                     agent=spec["agent"],
-                    prompt=run_prompt,
-                    tenant_id=spec.get("tenant_id", tenant_id),
-                    project_id=spec.get("project_id", project_id),
-                    user_id=spec.get("user_id", user_id),
-                    credential_profile=spec.get("credential_profile", credential_profile),
-                    agent_options=run_agent_options or None,
-                    context=run_context or None,
-                    extensions=run_extensions or None,
-                    extension_routing=run_extension_routing or None,
-                    tools=self._merge_mapping(tools, spec.get("tools")) or None,
-                    resources=run_resources or None,
-                    memory=self._merge_mapping(memory, spec.get("memory")) or None,
-                    delivery=self._merge_mapping(delivery, spec.get("delivery")) or None,
-                    timeout_seconds=spec.get("timeout_seconds", timeout_seconds),
+                    prompt=prompt,
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    user_id=user_id,
+                    context=context,
+                    extensions=extensions,
+                    extension_routing=extension_routing,
+                    tools=tools,
+                    resources=resources,
+                    memory=memory,
+                    delivery=delivery,
+                    timeout_seconds=timeout_seconds,
                     metadata=run_metadata,
-                    options=run_options or None,
-                    worklog=run_worklog,
+                    options=options,
+                    worklog=worklog,
                     idempotency_key=idempotency_key,
-                    document_references=run_document_references or None,
-                    files=run_files or None,
+                    document_references=document_references,
+                    files=files,
                     auto_idempotency_key=auto_idempotency_key,
                 )
             except Exception as exc:
@@ -696,16 +685,34 @@ class HAASClient:
             return None
         return max(0.0, retry_at.timestamp() - time.time())
 
+    @staticmethod
+    def _normalize_harness(agent: str) -> str:
+        if not isinstance(agent, str) or not agent.strip():
+            raise ValueError("agent must be a non-empty harness string")
+        return agent.strip()
+
+    @staticmethod
+    def _validate_deprecated_execution_options(
+        *,
+        credential_profile: str | None,
+        agent_options: Mapping[str, Any] | None,
+    ) -> None:
+        if credential_profile is not None and credential_profile != "default":
+            raise ValueError("credential_profile is deprecated; HAAS selects credentials server-side")
+        if agent_options:
+            raise ValueError("agent_options are deprecated; HAAS selects execution configuration server-side")
+
     def _normalize_run_many_entry(self, entry: str | Mapping[str, Any], index: int) -> dict[str, Any]:
         if isinstance(entry, str):
-            return {"name": entry, "agent": entry}
+            harness = self._normalize_harness(entry)
+            return {"name": harness, "agent": harness}
         spec = dict(entry)
-        if "agent" in spec:
-            return spec
-        if "type" in spec:
-            name = spec.pop("name", spec.get("type"))
-            return {"name": name, "agent": spec}
-        raise ValueError(f"run_many agent spec at index {index} must be a string, agent object, or run spec")
+        if set(spec) != {"name", "agent"}:
+            raise ValueError(f"run_many agent spec at index {index} must contain only name and agent")
+        name = spec["name"]
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError(f"run_many agent spec at index {index} has an invalid name")
+        return {"name": name.strip(), "agent": self._normalize_harness(spec["agent"])}
 
     def _normalize_wait_many_entries(
         self,
@@ -787,31 +794,6 @@ class HAASClient:
             value = next(iter(group_ids))
             return value if isinstance(value, str) else None
         return None
-
-    def _merge_mapping(
-        self,
-        base: Mapping[str, Any] | None,
-        override: Mapping[str, Any] | None,
-    ) -> dict[str, Any]:
-        merged = dict(base or {})
-        if override:
-            merged.update(dict(override))
-        return merged
-
-    def _merge_sequence(
-        self,
-        base: Iterable[Any] | None,
-        extra: Iterable[Any] | None,
-    ) -> list[Any]:
-        merged: list[Any] = []
-        for value in (base, extra):
-            if value is None:
-                continue
-            if isinstance(value, (str, bytes, Path)):
-                merged.append(value)
-            else:
-                merged.extend(value)
-        return merged
 
     def _normalize_document_references(self, references: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         normalized: list[dict[str, Any]] = []
